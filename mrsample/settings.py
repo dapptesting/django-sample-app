@@ -9,8 +9,11 @@ https://docs.djangoproject.com/en/4.0/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.0/ref/settings/
 """
-
+import boto3
 from pathlib import Path
+import json
+import os
+from botocore.exceptions import ClientError
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 import dj_database_url
@@ -25,10 +28,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = "django-insecure-w9xqr%11!qht)l5#u#w4(h11+@kl=w)%t%q%3s0e$8v=c*@lw0"
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DJANGO_ENV = os.getenv('DJANGO_ENV')
 
-ALLOWED_HOSTS = []
-
+if DJANGO_ENV == 'production':
+    DEBUG = False
+    ALLOWED_HOSTS = os.getenv('DJANGO_ALLOWED_HOSTS').split(',')
+else:
+    DEBUG = True
+    ALLOWED_HOSTS = []
 
 # Application definition
 
@@ -44,6 +51,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "mrsample.middleware.HealthCheckMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -77,10 +85,48 @@ WSGI_APPLICATION = "mrsample.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/4.0/ref/settings/#databases
 
+# COMMENTING SECRETS MANAGER RETRIEVAL AND DATABASES CONFIGURATION FOR NOW
+# Function to get secrets
+def get_secret(secret_name):
+    region_name = "us-east-1"
+    session = boto3.session.Session()
+    client = session.client(
+        service_name='secretsmanager', region_name=region_name)
+
+    try:
+        get_secret_value_response = client.get_secret_value(
+            SecretId=secret_name)
+    except ClientError as e:
+        raise Exception("Couldn't retrieve the secret") from e
+    else:
+        return json.loads(get_secret_value_response['SecretString'])[secret_name]
+
+
+DJANGO_SUPERUSER_PASSWORD = get_secret("django_superuser_password")
+# By default, use the local database configuration
 DATABASES = {
-    "default": dj_database_url.config(),
+    'default': {
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': 'djangodb',
+        'USER': 'test-user',
+        'PASSWORD': 'this.is.just.the.testing.password',
+        'HOST': 'db',
+        'PORT': '3306',
+    }
 }
 
+# If the DJANGO_ENV variable is set to 'production', use the production database configuration
+# TODO: Make sure we pass the HOST as an environment variable during deployment
+# using the output of aws_db_instance.default.endpoint in our TF script
+# I can set the DJANGO_ENV to production in the ECS task definition
+if os.getenv('DJANGO_ENV') == 'production':
+    DATABASES['default'].update({
+        'NAME': 'djangodb',
+        'USER': 'admin',
+        'PASSWORD': get_secret('db_password_secret'),
+        'HOST': os.getenv('DB_HOST'),
+        'PORT': '3306',
+    })
 
 # Password validation
 # https://docs.djangoproject.com/en/4.0/ref/settings/#auth-password-validators
@@ -105,13 +151,9 @@ AUTH_PASSWORD_VALIDATORS = [
 # https://docs.djangoproject.com/en/4.0/topics/i18n/
 
 LANGUAGE_CODE = "en-us"
-
 TIME_ZONE = "UTC"
-
 USE_I18N = True
-
 USE_TZ = True
-
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.0/howto/static-files/
